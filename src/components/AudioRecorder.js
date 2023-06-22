@@ -4,8 +4,20 @@
 import React, { useState, useEffect, useRef } from "react";
 import Whisper from "../utils/whipser";
 import { InferenceSession, Tensor } from "onnxruntime-web";
+import { encode } from "node-wav";
+const { WaveFile } = require("wavefile");
 
+const kSampleRate = 16000;
 const kMaxRecordingTime = 25 * 1000; // 25 seconds in milliseconds
+let sampling_rate = 48000;
+
+const context = new AudioContext({
+    sampleRate: kSampleRate,
+    channelCount: 1,
+    echoCancellation: false,
+    autoGainControl: true,
+    noiseSuppression: true,
+});
 
 // const mask = Int32Array.from(
 //     { length: 1 * 80 * 3000 },
@@ -43,7 +55,7 @@ const AudioRecorder = () => {
     const [recordedChunks, setRecordedChunks] = useState([]);
     const [recordedAudio, setRecordedAudio] = useState();
 
-    const [modelLoaded, setModelLoaded] = useState(false);
+    const [modelLoaded, setModelLoaded] = useState(true);
     const [model, setModel] = useState();
 
     useEffect(() => {
@@ -53,12 +65,12 @@ const AudioRecorder = () => {
             tokenizer_config: "whisper-finetuned",
         };
 
-        const whisper = new Whisper(config);
-        whisper.load().then((result) => {
-            console.log(result);
-            setModel(whisper);
-            setModelLoaded(true);
-        });
+        // const whisper = new Whisper(config);
+        // whisper.load().then((result) => {
+        //     console.log(result);
+        //     setModel(whisper);
+        //     setModelLoaded(true);
+        // });
     }, []);
 
     let recorder;
@@ -66,20 +78,25 @@ const AudioRecorder = () => {
     const startRecording = async () => {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
-                audio: true,
+                audio: { sampleRate: 44100 },
             });
             recorder = new MediaRecorder(stream);
+            sampling_rate = stream.getAudioTracks()[0].getSettings().sampleRate;
 
             const chunks = [];
             recorder.addEventListener("dataavailable", (event) => {
-                if (event.data.size > 0) {
-                    chunks.push(event.data);
+                const data = event.data;
+                console.log(data);
+
+                if (data.size > 0) {
+                    chunks.push(data);
                 }
             });
 
             recorder.addEventListener("stop", () => {
                 const recordedAudio = new Blob(chunks, {
-                    type: "audio/wav",
+                    type: "audio/wav; codecs=opu",
+                    // type: "audio/ogg; codecs=opu",
                 });
                 setRecordedChunks(chunks);
                 setIsRecording(false);
@@ -114,24 +131,49 @@ const AudioRecorder = () => {
         }
     };
 
-    const handleTranscribeClick = () => {
-        recordedAudio.arrayBuffer().then((buffer) => {
-            console.log("Pre");
-            model.feature_extractor(buffer).then(({ input_features }) => {
-                model.encode(input_features).then(({ last_hidden_state }) => {
-                    model.decode(last_hidden_state).then((tokens) => {
-                        model.decode_tokens(tokens).then((result) => {
-                            console.log(result);
-                        });
-                    });
-                });
-            });
+    function calc_perf(start) {
+        const time = ~~(((performance.now() - start) / 1000) * 100) / 100;
+        return time;
+    }
 
-            console.log("Post");
+    const handleTranscribeClick = () => {
+        const start = performance.now();
+        recordedAudio.arrayBuffer().then((buffer) => {
+            context.decodeAudioData(buffer).then((audioBuffer) => {
+                const offlineContext = new OfflineAudioContext(
+                    audioBuffer.numberOfChannels,
+                    audioBuffer.length,
+                    audioBuffer.sampleRate
+                );
+                const source = offlineContext.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(offlineContext.destination);
+                source.start();
+                const renderedBuffer = offlineContext
+                    .startRendering()
+                    .then((renderedBuffer) => {
+                        const audio = renderedBuffer.getChannelData(0);
+                        console.log(`Audio processed in ${calc_perf(start)}s`);
+                        console.log(audio);
+                    });
+            });
+            // Function to convert Blob to ArrayBuffer
+            // const uint8Array = new Uint8Array(buffer);
+            // const wav = new WaveFile();
+            // wav.fromBuffer(uint8Array);
+            // const audioData = new Float32Array(wav.getSamples(true));
+            // model.feature_extractor(audioData).then(({ input_features }) => {
+            //     model.encode(input_features).then(({ last_hidden_state }) => {
+            //         model.decode(last_hidden_state).then((tokens) => {
+            //             model.decode_tokens(tokens).then((result) => {
+            //                 console.log(result);
+            //             });
+            //         });
+            //     });
+            // });
             //     const processor = AutoProcessor.from_pretrained(null, {
             //         config,
             //     });
-
             //     processor.then((extractor) => {
             //         extractor(buffer).then(({ input_features }) => {
             //             const input_ids = new Tensor(
@@ -146,7 +188,6 @@ const AudioRecorder = () => {
             //                     decoder.run(feed).then(({ logits }) => {
             //                         const tokens = argMax(logits.data, 51864);
             //                         console.log(tokens);
-
             //                         WhisperTokenizer.from_pretrained(
             //                             "whisper-finetuned"
             //                         ).then((result) => {
@@ -187,38 +228,23 @@ const AudioRecorder = () => {
     }
     function handle(e) {
         e.target.files[0].arrayBuffer().then((buffer) => {
-            model.feature_extractor(buffer).then(({ input_features }) => {
-                model.encode(input_features).then(({ last_hidden_state }) => {
-                    // model.decode(last_hidden_state).then((tokens) => {
-                    //     console.log(tokens);
+            // Assuming `audioData` is the captured audio data as a Uint8Array
 
-                    //     // model.decode_tokens(tokens).then((result) => {
-
-                    //     // });
-                    // });
-
-                    const decoder_bas = "decoder_model_quantized.onnx";
-                    InferenceSession.create(decoder_bas).then((sess) => {
-                        const feed2 = {
-                            encoder_hidden_states: last_hidden_state,
-                            input_ids: new Tensor(
-                                new BigInt64Array([50362n]),
-                                [1, 1]
-                            ),
-                        };
-                        sess.run(feed2).then((res) => {
-                            const max = model.get_token_id(res);
-
-                            model
-                                .decode_tokens(max)
-                                .then((text) => console.log({ max, text }));
-                            // model.decode_tokens([50257, 632]).then((result) => {
-                            //     console.log(result);
-                            // });
-                        });
-                    });
-                });
-            });
+            const uint8Array = new Uint8Array(buffer);
+            console.log(buffer);
+            const wav = new WaveFile();
+            wav.fromBuffer(uint8Array);
+            const audioData = new Float32Array(wav.getSamples(true));
+            console.log(audioData);
+            // model.feature_extractor(audioData).then(({ input_features }) => {
+            //     model.encode(input_features).then(({ last_hidden_state }) => {
+            //         model.decode(last_hidden_state).then((tokens) => {
+            //             model.decode_tokens(tokens).then((result) => {
+            //                 console.log(result);
+            //             });
+            //         });
+            //     });
+            // });
         });
     }
     return (
@@ -262,3 +288,27 @@ export default AudioRecorder;
 // })
 
 //output = result.last_hidden_state
+
+/*
+Decoder only
+const decoder_bas = "decoder_model_quantized.onnx";
+                    InferenceSession.create(decoder_bas).then((sess) => {
+                        const feed2 = {
+                            encoder_hidden_states: last_hidden_state,
+                            input_ids: new Tensor(
+                                new BigInt64Array([1n, 50362n]),
+                                [1, 2]
+                            ),
+                        };
+                        sess.run(feed2).then((res) => {
+                            const max = model.get_token_id(res);
+
+                            model
+                                .decode_tokens(max)
+                                .then((text) => console.log({ max, text }));
+                            // model.decode_tokens([50257, 632]).then((result) => {
+                            //     console.log(result);
+                            // });
+                        });
+                    });
+*/

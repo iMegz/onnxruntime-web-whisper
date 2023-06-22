@@ -8,11 +8,15 @@
         "@testing-library/react": "^13.4.0",
         "@testing-library/user-event": "^13.5.0",
         "@xenova/transformers": "^2.2.0",
+        "audio-resampler": "^1.0.1",
         "jsbi": "^4.3.0",
+        "node-wav": "^0.0.2",
         "onnxruntime-web": "^1.15.1",
         "react": "^18.2.0",
         "react-dom": "^18.2.0",
         "react-scripts": "5.0.1",
+        "recorder-js": "^1.0.7",
+        "wavefile": "^11.0.0",
         "web-vitals": "^2.1.4"
     },
     "scripts": {

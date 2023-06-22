@@ -5,6 +5,11 @@ import { InferenceSession, Tensor } from "onnxruntime-web";
 
 console.warn = () => {};
 
+function calc_perf(start) {
+    const time = ~~(((performance.now() - start) / 1000) * 100) / 100;
+    return time;
+}
+
 /**
  * @typedef {Object} modelConfig
  * @property {String} [encoder_path=""] Path to onnx encoder realtive to public
@@ -41,6 +46,7 @@ class Whisper {
     };
     #loading_requirements;
     loaded = false;
+    #temp_time;
 
     /**
      * Intitialize Whipser model object
@@ -95,6 +101,7 @@ class Whisper {
      * @param {ArrayBuffer} audio_buffer Audio buffer sampled at 16KHz
      */
     async feature_extractor(audio_buffer) {
+        this.#temp_time = performance.now();
         if (!this.loaded) await this.load();
         const extractor = await this.#feature_extractor;
         return await extractor(audio_buffer);
@@ -105,6 +112,8 @@ class Whisper {
      * @param {Tensor} input_features
      */
     async encode(input_features) {
+        console.log(`Features extracted in ${calc_perf(this.#temp_time)}s`);
+        this.#temp_time = performance.now();
         if (!this.loaded) await this.load();
         const enocder = await this.#encoder;
         return enocder.run({ input_features });
@@ -115,6 +124,9 @@ class Whisper {
      * @param {Number[] | BigInt64Array} token_ids
      */
     async decode_tokens(token_ids) {
+        console.log(`Decoded ${calc_perf(this.#temp_time)}s`);
+        this.#temp_time = performance.now();
+
         if (!this.loaded) await this.load();
         const tokenizer = await this.#tokenizer;
         return tokenizer.decode(token_ids, { skip_special_tokens: true });
@@ -177,15 +189,14 @@ class Whisper {
      */
     async #decode_step(
         encoder_hidden_states,
-        { prev_decoder, input_ids, from_encoder = false } = {}
+        {
+            prev_decoder,
+            input_ids = new Tensor(new BigInt64Array([1n, 50362n]), [1, 2]),
+            from_encoder = false,
+        } = {}
     ) {
         const decoder = await this.#decoder;
         if (from_encoder) {
-            const tokenizer = await this.#tokenizer;
-            let init_input_ids = tokenizer.get_decoder_prompt_ids()[0];
-            console.log(init_input_ids);
-            init_input_ids = this.#toBigInt64Array(init_input_ids);
-            input_ids ??= new Tensor(init_input_ids, [1, 2]);
             const input_feed = this.#dummy_input(
                 input_ids,
                 encoder_hidden_states
@@ -195,15 +206,18 @@ class Whisper {
             const input_feed = {};
 
             Object.keys(prev_decoder).forEach((key) => {
-                if (key != "logits")
+                if (key !== "logits")
                     input_feed[key.replace("present", "past_key_values")] =
                         prev_decoder[key];
             });
 
-            input_feed["input_ids"] = new Tensor(
-                new BigInt64Array(input_ids.map((id) => BigInt(id))),
-                [1, input_ids.length]
-            );
+            // input_feed["input_ids"] = new Tensor(
+            //     new BigInt64Array(input_ids.map((id) => BigInt(id))),
+            //     [1, input_ids.length]
+            // );
+            let temp_input_ids = this.#toBigInt64Array(input_ids);
+            temp_input_ids = new Tensor(temp_input_ids, [1, input_ids.length]);
+            input_feed["input_ids"] = temp_input_ids;
             input_feed["encoder_hidden_states"] = encoder_hidden_states;
             input_feed["use_cache_branch"] = new Tensor("bool", [false], [1]);
             return decoder.run(input_feed);
@@ -242,7 +256,7 @@ class Whisper {
      * @param {Tensor} decoder_out
      * @returns
      */
-    get_token_id(decoder_out) {
+    #get_token_id(decoder_out) {
         const logits = decoder_out.logits.data;
         return this.#argmax(logits);
     }
@@ -253,28 +267,23 @@ class Whisper {
      * @returns {Number[]}
      */
     async decode(encoder_hidden_states) {
+        console.log(`Encoded in ${calc_perf(this.#temp_time)}s`);
+        this.#temp_time = performance.now();
+
         if (!this.loaded) await this.load();
         const EOS_TOKEN_ID = 50256;
         let decoded_step = await this.#decode_step(encoder_hidden_states, {
             from_encoder: true,
         });
-        let token_id = this.get_token_id(decoded_step);
-        console.log(token_id);
-        let tokens_ids = [...token_id];
-        // for (let i = 0; i < 5; i++) {
-        //     const opt = { prev_decoder: decoded_step, input_ids: tokens_ids };
-        //     decoded_step = await this.#decode_step(encoder_hidden_states, opt);
-        //     token_id = this.#get_token_id(decoded_step);
-        //     console.log(token_id);
-        //     tokens_ids = [...tokens_ids, ...token_id];
-        // }
-        // while (tokens_ids.at(-1) != EOS_TOKEN_ID && tokens_ids.at(-2) != EOS_TOKEN_ID) {
-        //     const opt = { prev_decoder: decoded_step, input_ids: tokens_ids };
-        //     decoded_step = await this.#decode_step(encoder_hidden_states, opt);
-        //     token_id = this.#get_token_id(decoded_step);
-        //     tokens_ids.append(token_id.at(-1));
-        //     console.log(tokens_ids);
-        // }
+        let token_id = this.#get_token_id(decoded_step);
+        const tokens_ids = [...token_id];
+
+        while (tokens_ids.at(-1) !== EOS_TOKEN_ID) {
+            const opt = { prev_decoder: decoded_step, input_ids: tokens_ids };
+            decoded_step = await this.#decode_step(encoder_hidden_states, opt);
+            token_id = this.#get_token_id(decoded_step);
+            tokens_ids.push(token_id.at(-1));
+        }
 
         return tokens_ids;
     }

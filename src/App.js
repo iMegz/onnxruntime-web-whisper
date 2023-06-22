@@ -1,5 +1,6 @@
 import "./App.css";
 import AudioRecorder from "./components/AudioRecorder";
+import Mic from "./components/Mic";
 // import Whipser from "./components/Whipser";
 
 // const MODEL_PATH = "./model_int8.onnx";
@@ -54,8 +55,9 @@ function App() {
 
     return (
         <div className="App">
-            <h1>Hello</h1>
-            <AudioRecorder />
+            {/* <h1>Hello</h1>
+            <AudioRecorder /> */}
+            <Mic />
         </div>
     );
 }
